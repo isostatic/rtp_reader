@@ -139,13 +139,19 @@ def printStatsAndReset(number):
         tsout = ""
         total = 0
         num = 0
+        mn = 99999
+        mx = 0
         for tsdiff in sorted(tsdiffcount[stream]):
             tsout += " "+str(tsdiff)+"="+str(tsdiffcount[stream][tsdiff])
             total += tsdiff * tsdiffcount[stream][tsdiff]
             num += tsdiffcount[stream][tsdiff]
+            if (tsdiff < mn):
+                mn = tsdiff
+            if (tsdiff > mx):
+                mx = tsdiff
 
         avg = total / num
-        tsout = "avg=" + str(int(avg*100)/100) + ", {" + tsout + "}"
+        tsout = "avg=" + str(int(avg*100)/100) + ", range=" + str(mn) + "-" + str(mx) + "{" + tsout + "}"
         print("Stream:",stream,"TS Diff " + tsout)
 
         for pid in sorted(pidcount[stream]):
