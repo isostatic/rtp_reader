@@ -11,28 +11,58 @@ from datetime import datetime
 
 current_nano_time = lambda: int(round(time.time() * 1000000))
 lastseq = {}
+lastts = {}
 lastcc = {}
 pidcount = {}
+tsdiffcount = {}
 timestamp = 0;
 starttime = 0;
 statsEvery = 500
 
+
+def byte2hex(bytarr):
+    tor = "0x"
+    for b in bytarr:
+        tor += hex(b)[2:]
+    return tor
+
 def parseRTP(key,data):
     global lastseq
+    global lastts
+    global tsdiffcount
     rtp_seq= getBigint(data[2:4])
+
+    rtp_ts= getBigint(data[4:8])
+
     if (key not in lastseq):
         lastseq[key] = rtp_seq-1
         True;
 
+    if (key not in lastts):
+        lastts[key] = 0
+        True;
+
+    if (key not in tsdiffcount):
+        tsdiffcount[key] = {}
+        True;
+
+    tsdiff = rtp_ts - lastts[key]
     delta = rtp_seq - lastseq[key]
+
     if (delta == 1 or delta == -65535):
         # OK
-#         print(key + " num:" + str(rtp_seq) + ":: OK")
+#        print(key,"ts",byte2hex(data[4:8]),"decode=",rtp_ts)
+#        print(key + " num:" + str(rtp_seq) + ": tsdiff:" + str(tsdiff) + ": OK")
+        if (lastts[key] > 0):
+            if (tsdiff not in tsdiffcount[key]):
+                tsdiffcount[key][tsdiff] = 0
+            tsdiffcount[key][tsdiff] += 1
         True;
     else:
         print(key + " RTP ERROR in " + timestamp + " error jump of " + str(delta) + " from " + str(lastseq[key]) + " to " + str(rtp_seq))
         True;
     lastseq[key] = rtp_seq
+    lastts[key] = rtp_ts
 
 def parseTS(key,data):
     global lastcc
@@ -101,16 +131,30 @@ def byte2ip(i):
     return(str(i[0]) + "." + str(i[1]) + "." + str(i[2]) + "." + str(i[3]));
 
 def printStatsAndReset(number):
-    number = str(number)
     global pidcount
+    global tsdiffcount
+    number = str(number)
     print("== CURRENT STATS " + timestamp + " of last " + number + " packets ==")
     for stream in sorted(pidcount):
+        tsout = ""
+        total = 0
+        num = 0
+        for tsdiff in sorted(tsdiffcount[stream]):
+            tsout += " "+str(tsdiff)+"="+str(tsdiffcount[stream][tsdiff])
+            total += tsdiff * tsdiffcount[stream][tsdiff]
+            num += tsdiffcount[stream][tsdiff]
+
+        avg = total / num
+        tsout = "avg=" + str(int(avg*100)/100) + ", {" + tsout + "}"
+        print("Stream:",stream,"TS Diff " + tsout)
+
         for pid in sorted(pidcount[stream]):
             pid_str=str(pid)
             if (pid == 8191):
                 pid_str = "8191 (NULL)"
             print("Stream:",stream,"Pid:",pid_str,"Count:",pidcount[stream][pid])
     pidcount = {}
+    tsdiffcount = {}
 
 def parseEther(eth_pkt, baseFilename, mediumType):
     global lastseq
@@ -138,15 +182,19 @@ def parseEther(eth_pkt, baseFilename, mediumType):
         eth_type = eth_pkt[12:14]
         ipStart = 14
 #        print("Ethernet type",eth_type);
+#        print("ethertype",hex(eth_type[0]),hex(eth_type[1]));
         if (eth_type == b'\x81\x00'):
             vlan_num=getBigint(eth_pkt[14:16])
             ipStart = 18
         elif (eth_type == b'\x08\x00'):
             # Normal ethernet
             ipStart = 14
+        elif (eth_type == b'\x88\xcc'):
+            # lldp
+            return True;
         else:
-            print("UNKNOWN ethertype",eth_type);
-            return False;
+#            print("UNKNOWN ethertype",hex(eth_type[0]),hex(eth_type[1]));
+            return True;
     elif (mediumType == 113):
         # Linux cooked capture (-i any etc)
         ipStart = 20
