@@ -19,12 +19,39 @@ timestamp = 0;
 starttime = 0;
 statsEvery = 500
 
+lastpcrrtp = {}
+lastpcrbase = {}
+lastpcrext = {}
+pcrdiffcount = {}
 
-def byte2hex(bytarr):
-    tor = "0x"
+current_pat = {}
+
+svctable = {}
+svctable["Service"] = {}
+svctable["Provider"] = {}
+
+def bytes2hexstream(bytarr):
+    tor = ""
     for b in bytarr:
         tor += hex(b)[2:]
     return tor
+
+def bytes2hex(bytarr, padto=0):
+    tor = ""
+    base = ""
+    for b in bytarr:
+        toadd = hex(b)[2:]
+        if (len(toadd)) == 1:
+            toadd = "0" + toadd
+        tor += toadd
+        base += toadd
+        if (len(base) > 0 and len(base) % 8 == 0):
+            tor += "."
+
+    while (len(base) < padto):
+        tor = "0" + tor
+        
+    return "0x" + tor
 
 def parseRTP(key,data):
     global lastseq
@@ -51,7 +78,7 @@ def parseRTP(key,data):
 
     if (delta == 1 or delta == -65535):
         # OK
-#        print(key,"ts",byte2hex(data[4:8]),"decode=",rtp_ts)
+#        print(key,"ts",bytes2hex(data[4:8]),"decode=",rtp_ts)
 #        print(key + " num:" + str(rtp_seq) + ": tsdiff:" + str(tsdiff) + ": OK")
         if (lastts[key] > 0):
             if (tsdiff not in tsdiffcount[key]):
@@ -64,7 +91,170 @@ def parseRTP(key,data):
     lastseq[key] = rtp_seq
     lastts[key] = rtp_ts
 
-def parseTS(key,data):
+def binp(num, padto=0):
+    binary = str(bin(num))[2:]
+    while (len(binary) < padto):
+        binary = "0" + str(binary)
+    return binary
+    
+
+def processAdaptationField(key, pidnum, isonum, rtpheader, data):
+    global lastpcrrtp
+    global lastpcrbase
+    global lastpcrext
+    global pcrdiffcount
+    if (len(data) != 188):
+        ## Not valid packet
+        return None;
+
+    flen = data[4]
+    flags = data[5]
+    pcr_flag = flags & 0x10
+    opcr_flag = flags & 0x08
+    
+    if (pcr_flag):
+        # PCR flag is the next 48 bits
+        pcr_data = data[6:12]
+        pcr_base = getBigint(pcr_data) >> 15
+        pcr_ext = (getBigint(pcr_data) & 0x0000000001ff)
+#        print("PCR field", binp(getBigint(pcr_data), 48))
+#        print("PCR base ", binp(pcr_base, 33))
+#        print("PCR ext                                         ", binp(pcr_ext, 9))
+
+        # PCR_base(i) == ((system_clock_frequency * t(i)) DIV 300) % 2^33
+        # PCR_ext(i)  == ((system_clock_frequency * t(i)) DIV 1) % 300
+        rtp_ts = getBigint(rtpheader[4:8])
+#        print("RTPH: ",bytes2hex(rtpheader,8))
+#        print("RTPH: ",bytes2hex(rtpheader[4:8],8))
+#        print("RTP:       ",binp(rtp_ts,32),rtp_ts)
+#        print("PKT: ",bytes2hex(data))
+#        print("PCRdata: ",bytes2hex(pcr_data))
+#        print("PCR: ",bin(pcr_base),pcr_base,pcr_ext)
+        if (key in lastpcrrtp):
+            if (pidnum in lastpcrrtp[key]):
+                rtp_diff = rtp_ts - lastpcrrtp[key][pidnum]
+                base_diff = pcr_base - lastpcrbase[key][pidnum]
+                ext_diff = pcr_ext - lastpcrext[key][pidnum]
+#                print(timestamp, str(key) + ";" + str(pidnum) + "." + str(isonum), "PCR diffs",rtp_diff,base_diff,ext_diff % 300)
+                if (key not in pcrdiffcount):
+                    pcrdiffcount[key] = {}
+                if (pidnum not in pcrdiffcount[key]):
+                    pcrdiffcount[key][pidnum] = {}
+                if (base_diff not in pcrdiffcount[key][pidnum]):
+                    pcrdiffcount[key][pidnum][base_diff] = 0
+
+#                print("Store PCR diff of " + str(base_diff) + " for key " + str(key) + ", pid " + str(pidnum))
+                pcrdiffcount[key][pidnum][base_diff] += 1
+        else:
+            lastpcrrtp[key] = {}
+            lastpcrbase[key] = {}
+            lastpcrext[key] = {}
+
+        lastpcrbase[key][pidnum] = pcr_base
+        lastpcrrtp[key][pidnum] = rtp_ts
+        lastpcrext[key][pidnum] = pcr_ext
+
+def parseSDT(stream, data):
+    global svctable
+    sdt_data=data[5:]
+#    print(timestamp,stream,"Service Description Table",bytes2hex(sdt_data))
+    # 0 - table id
+    # 1-2 flags
+    # 3-4 tsid // network id
+    # 5 flags
+    # 6 sec num
+    # 7 last sec num
+    # 8-9 orig net id (reserved for future use + length in spec)
+    # 10 reserved
+    # 11-12 serviceid
+    # 13-15 flags (12 bit)+looplen (12 bit)
+    # 16 descriptor (this may be in loops etc)
+    if (sdt_data[0] != 0x42):
+        print(timestamp,stream,"WARNING: SDT for non current network, ignoring");
+        return;
+
+    ts_id = getBigint(sdt_data[3:5])
+    descriptlen = getBigint(sdt_data[14:16]) & 0xfff
+    descript_data = sdt_data[16:descriptlen+16]
+#    print("SDT",ts_id,descriptlen,"data=",bytes2hex(descript_data))
+
+    # descriptor
+    # 0 - 0x48
+    # 1 - length
+    # 2 - type (0x19)
+    # 3 - length of name
+    # 4-len+4 - provider name
+    # service name len
+    # service name
+    if (descript_data[0] != 0x48):
+        print(timestamp,stream,"WARNING: SDT Descript not starting with 0x48");
+        return
+    prov_len = descript_data[3] 
+    if (prov_len < 1):
+        providerb = bytes("", 'utf-8')
+    else:
+        providerb = descript_data[4:4+prov_len] 
+
+    svc_len = descript_data[4+prov_len]
+    if (svc_len < 1):
+        serviceb = bytes("", 'utf-8')
+    else:
+        serviceb = descript_data[5+prov_len:5+prov_len+svc_len] 
+
+    provider = providerb.decode()
+    service = serviceb.decode()
+
+#    print("Service",provider,service)
+    if (stream not in svctable["Service"]):
+        svctable["Service"][stream] = {}
+        svctable["Service"][stream]["name"] = ""
+    if (stream not in svctable["Provider"]):
+        svctable["Provider"][stream] = {}
+        svctable["Provider"][stream]["name"] = ""
+
+    svctable["Service"][stream]["name"] = service
+    svctable["Provider"][stream]["name"] = provider
+    
+
+def parsePAT(stream, data):
+    # assumes 1 program
+    # Set aside the mpeg header. First 4 is header, 5 is a pointer (?)
+    pat_data = data[5:]
+#    print(stream,"PAT",bytes2hex(pat_data),timestamp)
+    # format
+    # b0     = tableid = 0x00 for a Prog assoc table
+    # b1-2   = flags + length
+    # b3-4   = tsid
+    # b5     = flags
+    # b6     = sec num
+    # b7     = last sec num
+    # b9     = prog number
+    # b10-11 = 111(pmap pid)
+    # b11-14 =  crc
+
+    prog_num = pat_data[9]
+    # 0 is network pid and set by thigns like OBEs
+    # 1 is common too and set by things like Appear
+
+    if (stream in current_pat):
+        if (pat_data != current_pat[stream]["pat_data"]):
+            True
+#            print(timestamp,stream, "PAT CHANGE from",bytes2hex(current_pat[stream]["pat_data"]))
+#            print(timestamp,stream, "PAT CHANGE   to",bytes2hex(pat_data))
+    else:
+        current_pat[stream] = {}
+        current_pat[stream]["pat_data"] = pat_data
+        current_pat[stream]["pmpid"] = 0
+#        print(stream, "First PAT found",bytes2hex(pat_data))
+
+    current_pat[stream]["pat_data"] = pat_data
+
+    pmpid = getBigint(pat_data[10:12]) & 0xe0 # mask first 3 bits
+#    print(timestamp,stream,"ProgID",prog_num,"PMAPID", pmpid, bytes2hex(pat_data[10:12]))
+    current_pat[stream]["pmpid"] = pmpid
+        
+
+def parseTS(key,isonum,rtpheader,data):
     global lastcc
     global pidcount
     seqnum = lastseq[key]
@@ -82,6 +272,7 @@ def parseTS(key,data):
         pidB = (pidH,pidL)
         pidnum = int.from_bytes(pidB, "big")
 
+#        print(timestamp,"hdr",hex(hdr[0]),bin(hdr[1]),bin(hdr[2]),bin(hdr[3]), bytes2hex(hdr))
         cc = hdr[3] & 0x0f; # Last 4 bytes
         adapt = hdr[3] >> 4 & 0x03; # adapation field
         # adaptation_field_control, 0 = reserved, 1=adaptation_field, payload only, 2=Adaptation_field only, no payload, 3=Adaptation_field followed by payload
@@ -95,6 +286,9 @@ def parseTS(key,data):
 #                pidcount[key][adapnum] = 0
 #            pidcount[key][adapnum] += 1
             return
+        if (adapt == 3):
+            processAdaptationField(key, pidnum, isonum, rtpheader, data)
+
 
         if (pidnum not in pidcount[key]):
             pidcount[key][pidnum] = 0
@@ -103,6 +297,18 @@ def parseTS(key,data):
 #            print(key, timestamp, seqnum, "NULL PACKET")
             pidcount[key][pidnum] += 1
             return
+
+        # SDT - service name etc
+        if (pidnum == 0x11):
+            parseSDT(key,data)
+
+#        print(timestamp,"CONT",bytes2hex(data))
+        if (pidnum == 0):
+#            print("PAT in", key, pidnum, getBigint(rtpheader[2:4]))
+            # TODO -- parse this then set the PAT for the stream
+            # Do we need to do more than one program? probably not
+            parsePAT(key, data)
+
         if (pidnum not in lastcc[key]):
             lastcc[key][pidnum] = -1
 
@@ -152,13 +358,44 @@ def printStatsAndReset(number):
 
         avg = total / num
         tsout = "avg=" + str(int(avg*100)/100) + ", range=" + str(mn) + "-" + str(mx) + "{" + tsout + "}"
-        print("Stream:",stream,"TS Diff " + tsout)
+
+        streamname = ""
+        if (stream in svctable["Provider"]):
+            if (len(svctable["Provider"][stream]["name"])):
+                streamname += svctable["Provider"][stream]["name"] + "//"
+
+        if (stream in svctable["Service"]):
+            streamname += svctable["Service"][stream]["name"] 
+
+        print("Stream:",stream,streamname,"TS Diff " + tsout)
 
         for pid in sorted(pidcount[stream]):
+            pcrtxt = ""
             pid_str=str(pid)
             if (pid == 8191):
                 pid_str = "8191 (NULL)"
-            print("Stream:",stream,"Pid:",pid_str,"Count:",pidcount[stream][pid])
+
+            if stream in pcrdiffcount:
+                if pid in pcrdiffcount[stream]:
+                    mnVal = 9999999999999999
+                    mxVal = 0
+                    numVal = 0
+                    totVal = 0
+                    valOut = ""
+#                    print("DBG",pid_str,pcrdiffcount[stream][pid])
+                    for pcrdiff in sorted(pcrdiffcount[stream][pid]):
+                        numOfDiff = pcrdiffcount[stream][pid][pcrdiff]
+                        totVal += pcrdiff
+                        numVal += 1
+                        if (pcrdiff < mnVal):
+                            mnVal = pcrdiff
+                        if (pcrdiff > mxVal):
+                            mxVal = pcrdiff
+                        valOut += " "+str(pcrdiff)+"="+str(numOfDiff)
+                    avgVal = totVal / numVal
+                    pcrtxt = " *PCR avg=" + str(int(avgVal*100)/100) + ", range=" + str(mnVal) + "-" + str(mxVal) + " {" + valOut + " }"
+
+            print("Stream:",stream,streamname,"Pid:",pid_str,"Count:",pidcount[stream][pid],pcrtxt)
     pidcount = {}
     tsdiffcount = {}
 
@@ -203,27 +440,41 @@ def parseEther(eth_pkt, baseFilename, mediumType):
             return True;
     elif (mediumType == 113):
         # Linux cooked capture (-i any etc)
-        ipStart = 20
+        ipStart = 18
+        eth_type = eth_pkt[14:16]
+#        print("ET",bytes2hex(eth_type))
+        if (eth_type == b'\x81\x00'):
+            vlan_num=getBigint(eth_pkt[16:18])
+            ipStart = 20
+        elif (eth_type == b'\x08\x00'):
+            # Normal ethernet
+            ipStart = 16
+        elif (eth_type == b'\x88\xcc'):
+            # lldp
+            return True;
+        else:
+#            print("UNKNOWN ethertype",hex(eth_type[0]),hex(eth_type[1]));
+            return True;
     else:
-        print("UNKNOWN capture type",mediumType)
+#        print("UNKNOWN capture type",mediumType)
         return False;
 
     # Normal capture
     ip_pkt = eth_pkt[ipStart:]
 
-#    print("Got IP packet of len",len(ip_pkt))
+#    print(timestamp,"Got IP packet of len",len(ip_pkt),bytes2hexstream(ip_pkt))
     ip_hdr = ip_pkt[0:20]
     udp_pkt = ip_pkt[20:]
 
     srcip = byte2ip(ip_hdr[12:16])
     dstip = byte2ip(ip_hdr[16:20])
 
-#    print("Got IP packet ",srcip,dstip);
     srcport = getBigint(udp_pkt[0:2])
     dstport = getBigint(udp_pkt[2:4])
     udplen = getBigint(udp_pkt[4:6])
 
     data = udp_pkt[8:]
+#    print("Got IP packet ",srcip,srcport,dstip,dstport,len(data));
     if ((udplen - 8) == len(data) and udplen == 1336):
         # OK, looks like this is the RTP payload
         ts_data = data[12:]
@@ -233,7 +484,7 @@ def parseEther(eth_pkt, baseFilename, mediumType):
 #        print("START PARSE OF ",stream_key)
         for i in range(7):
             base = i * 188
-            parseTS(stream_key,ts_data[base:base+188])
+            parseTS(stream_key,i,data[0:12],ts_data[base:base+188])
 
         # Save to TS
         if (baseFilename == None):
@@ -301,6 +552,7 @@ def run(capfile, destfile):
         num=0
         while readPacket(fh, destfile, captype):
             num = num + 1
+#            print("DBG Packet Number", num)
             if (statsEvery > 0 and num % statsEvery == 0):
                 printStatsAndReset(num)
                 num = 0
