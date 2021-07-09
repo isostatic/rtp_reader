@@ -36,6 +36,39 @@ svctable = {}
 svctable["Service"] = {}
 svctable["Provider"] = {}
 
+log_base= ""
+
+
+def STATS(line):
+    if (log_base == ""):
+        print(line)
+    else:
+        date = datetime.utcfromtimestamp(unix_time).strftime('%Y-%m-%d')
+        fh = open(log_base + "." + date + ".STATS.log", "a")
+        fh.write(line + "\n");
+        fh.close()
+
+def ERROR(line):
+    OUTPUT("ERROR",line)
+
+def WARNING(line):
+    OUTPUT("WARNING",line)
+
+def INFO(line):
+    OUTPUT("INFO",line)
+
+def DEBUG(line):
+    OUTPUT("DEBUG",line)
+
+def OUTPUT(level,line):
+    if (timestamp == 0 or log_base == ""):
+        print(level,timestamp,line)
+    else:
+        date = datetime.utcfromtimestamp(unix_time).strftime('%Y-%m-%d')
+        fh = open(log_base + "."+date + "." + level+".log", "a")
+        fh.write(str(timestamp) + " " + line + "\n");
+        fh.close()
+
 def bytes2hexstream(bytarr):
     tor = ""
     for b in bytarr:
@@ -100,7 +133,7 @@ def parseRTP(key,data):
 
     rtp_avg = (lastrtpts[key]["last"]-lastrtpts[key]["start"])/lastrtpts[key]["num"]
     rtp_timeperiod_sec = int((lastrtpts[key]["last"]-lastrtpts[key]["start"])/10000)/100
-#    print(key,timestamp,"Got RTP packet at " + str(rtp_us) + " after " + str(delta_rtp_us) + " (range=" + str(lastrtpts[key]["min"]) + "-" + str(lastrtpts[key]["max"]) + "). Time period (sec)=",rtp_timeperiod_sec,"AVG=",rtp_avg)
+#    debug(key,timestamp,"Got RTP packet at " + str(rtp_us) + " after " + str(delta_rtp_us) + " (range=" + str(lastrtpts[key]["min"]) + "-" + str(lastrtpts[key]["max"]) + "). Time period (sec)=",rtp_timeperiod_sec,"AVG=",rtp_avg)
 
 
     rtp_seq= getBigint(data[2:4])
@@ -134,7 +167,7 @@ def parseRTP(key,data):
     else:
         svcstring = ""
         streamname = getStreamName(key)
-        print(timestamp, key, "RTP ERROR in " + streamname + " error jump of " + str(delta) + " from " + str(lastseq[key]) + " to " + str(rtp_seq))
+        ERROR(key + " RTP ERROR in " + key + "(" + streamname + ") error jump of " + str(delta) + " from " + str(lastseq[key]) + " to " + str(rtp_seq))
         True;
     lastseq[key] = rtp_seq
     lastts[key] = rtp_ts
@@ -228,7 +261,7 @@ def parseSDT(stream, data):
     # 13-15 flags (12 bit)+looplen (12 bit)
     # 16 descriptor (this may be in loops etc)
     if (sdt_data[0] != 0x42):
-        print(timestamp,stream,"WARNING: SDT for non current network, ignoring");
+        WARNING(stream+"WARNING: SDT for non current network, ignoring");
         return;
 
     ts_id = getBigint(sdt_data[3:5])
@@ -245,7 +278,7 @@ def parseSDT(stream, data):
     # service name len
     # service name
     if (descript_data[0] != 0x48):
-        print(timestamp,stream,"WARNING: SDT Descript not starting with 0x48");
+        WARNING(stream,"WARNING: SDT Descript not starting with 0x48");
         return
     prov_len = descript_data[3] 
     if (prov_len < 1):
@@ -384,14 +417,14 @@ def parseTS(key,isonum,rtpheader,data):
     
         if (diff != 1):
             streamname = getStreamName(key)
-            print(timestamp, key, "CC ERROR in " + streamname + " RTP=" + str(seqnum) + "." + str(pidnum) + ". Jumped " + str(diff) + " from " + str(lastcc[key][pidnum]) + " to " + str(cc));
+            ERROR(key  +" CC ERROR in " + key + " (" + streamname + ") RTP=" + str(seqnum) + "." + str(pidnum) + ". Jumped " + str(diff) + " from " + str(lastcc[key][pidnum]) + " to " + str(cc));
 
 #        print(key,"PID ",pidnum,"=",hex(pidnum),"CC=",cc,"diff=",diff,"lastcc=",lastcc[key][pidnum])
         lastcc[key][pidnum] = cc
         pidcount[key][pidnum] += 1
 #        print(key, "FINISHED parse of PID",pidnum,"cc=",cc,"last=",lastcc[key][pidnum]);
     else:
-        print("SYNC BYTE INVALID")
+        WARNING("SYNC BYTE INVALID")
 
 def byte2ip(i):
     #return(str(i[2]) + "." + str(i[3]) + "." + str(i[0]) + "." + str(i[1]));
@@ -404,8 +437,8 @@ def printStatsAndReset(number, realtime):
     # If realtime is sent, print 100 blank lines to make it easier to watch in a real time window
     if (realtime):
         for i in range(100):
-            print()
-    print("== CURRENT STATS " + timestamp + " of last " + number + " packets ==")
+            STATS("")
+    STATS("== CURRENT STATS " + timestamp + " of last " + number + " packets ==")
     for stream in sorted(pidcount):
         tsout = ""
         total = 0
@@ -436,7 +469,7 @@ def printStatsAndReset(number, realtime):
         rtp_str += " max=" + str(int(lastrtpts[stream]["max"]/100)/10) + "ms"
         rtp_str += " avg=" + str(int(rtp_avg/10)/100) + "ms"
 
-        print("Stream:",stream,streamname,"RTP Packets:"+rtp_str,"Timestamp DIFF " + tsout)
+        STATS("Stream: "+stream+" "+streamname+" RTP Packets:"+rtp_str+" Timestamp DIFF " + tsout)
 
         for pid in sorted(pidcount[stream]):
             pcrtxt = ""
@@ -464,7 +497,8 @@ def printStatsAndReset(number, realtime):
                     avgVal = totVal / numVal
                     pcrtxt = " *PCR avg=" + str(int(avgVal*100)/100) + ", range=" + str(mnVal) + "-" + str(mxVal) + " {" + valOut + " }"
 
-            print("Stream:",stream,streamname,"Pid:",pid_str,"Count:",pidcount[stream][pid],pcrtxt)
+            STATS("Stream:"+stream+" " + streamname + " Pid:"+pid_str+" Count:"+str(pidcount[stream][pid])+" " + pcrtxt)
+    # end of for each pidcount
     pidcount = {}
     tsdiffcount = {}
     lastpcrrtp = {}
@@ -610,10 +644,10 @@ def run(capfile, destfile, realtime):
     global last_stat_print
     fh = sys.stdin.buffer
     if (capfile == None):
-        print("Read from STDIN");
+        INFO("Read from STDIN");
         capfile = "STDIN"
     else:
-        print("Read from ",capfile);
+        INFO("Read from ",capfile);
         fh = open(capfile, 'rb')
 #    with open(capfile, 'rb') as fh:
     if (True):
@@ -647,10 +681,10 @@ def run(capfile, destfile, realtime):
                 printStatsAndReset(num, realtime)
                 num = 0
             True;
-        print("Parse of " + capfile + " from " + starttime + " complete",num,"packets read")
+        INFO("Parse of " + capfile + " from " + starttime + " complete",num,"packets read")
         printStatsAndReset(num, realtime)
         if (destfile != None):
-            print("TS dumped to "+destfile+".*.ts")
+            INFO("TS dumped to "+destfile+".*.ts")
 
 # sudo tcpdump -i ens1f1 udp port 6204 or port 6205 or port 6206 -w - | ./dumpts.py -s 20000
 # ./dumpts.py -i cap.cap
@@ -658,9 +692,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--in-file', help="File to read from (none=stdin)")
     parser.add_argument('-o', '--out-file', help="Root of file to write to (none=dontwrite)")
-    parser.add_argument('-s', '--stats-every', type=int, help="Show and reset stats every n packets", default=0)
+    parser.add_argument('-s', '--stats-every', type=int, help="Show and reset stats every n seconds", default=0)
     parser.add_argument('-rt', '--real-time', action="store_true", help="Clear the screen before printing stags for easy real time use")
+    parser.add_argument('-l', '--log-file', help="Output to different log files (logfile.debug.log, logfile.stats.log, logfile.errors.log) instead of STDOUT", default="")
     args = parser.parse_args()
     statsEvery = args.stats_every
+    log_base = args.log_file
     run(args.in_file, args.out_file, args.real_time)
     
