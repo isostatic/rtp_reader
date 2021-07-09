@@ -647,7 +647,7 @@ def run(capfile, destfile, realtime):
         INFO("Read from STDIN");
         capfile = "STDIN"
     else:
-        INFO("Read from ",capfile);
+        INFO("Read from "+capfile);
         fh = open(capfile, 'rb')
 #    with open(capfile, 'rb') as fh:
     if (True):
@@ -681,7 +681,7 @@ def run(capfile, destfile, realtime):
                 printStatsAndReset(num, realtime)
                 num = 0
             True;
-        INFO("Parse of " + capfile + " from " + starttime + " complete",num,"packets read")
+        INFO("Parse of " + capfile + " from " + starttime + " complete. "+str(num) + " packets read")
         printStatsAndReset(num, realtime)
         if (destfile != None):
             INFO("TS dumped to "+destfile+".*.ts")
