@@ -7,8 +7,11 @@ Used for internal debugging, but might be useful to people who are as smoothbrai
 Parse a tcpdump capture file
   ./dumpts.py -i /tmp/cap.cap 
 
-Listen across a span port for all RTP streams and output stats every 4000 packets
-  tcpdump -i eno2 -w - | ./dumpts.py  -s 4000
+Listen across a span port for all RTP streams and output stats every second in an interactive session
+  tcpdump -i eno2 -w - | ./dumpts.py  -s 1 -rt
+
+Listen across a span port for all RTP streams and output stats every 10 seconds to different logfiles
+  tcpdump -i eno2 -w - | ./dumpts.py  -s 4 -l /var/tmp/eno2
 
 Dump contents of a capture to a .ts (appends to existing TS for use on concattenated caps)
   ./dumpts.py -i /tmp/cap.cap -o output
