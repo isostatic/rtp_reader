@@ -4,9 +4,10 @@
 #include <linux/ip.h>
 #include <linux/udp.h>
         
-const u64 STREAM_SAMPLE_RESET_TIME_NS = 5000000000; // time to reset stream counters in nanoseconds - 5 seconds
+const u64 NS_IN_SEC = 1000000000;
+const u64 STREAM_SAMPLE_RESET_TIME_NS = NS_IN_SEC*5; // time to reset stream counters in nanoseconds - 5 seconds
 const u64 BYTES_PER_IP_PACKET = 1328 + sizeof(struct udphdr) + sizeof(struct iphdr); // rtp = 7*188 + 12 = 1328
-const u64 MAX_SDT_TIME_NS = 30000000000; // 30 second max SDT age before we expire it
+const u64 MAX_SDT_TIME_NS = NS_IN_SEC*30; // 30 second max SDT age before we expire it
 
 const int MAX_PROV_LEN = 30; // maximum length of provider/service strings we want to cope with
 
@@ -49,9 +50,34 @@ struct mpeghdr {
     u8 rest[184];
 };
 
+// stats and error message to push to userspace when we reset the counters
+struct stats_data_t {
+    u64 lastPacketTime;
+    u64 firstPacketTime;
+    u64 packetnum;
+    u16 lastSeqNum;
+    u64 errors; // u64 - lets hope not!!
+    u16 srcport;
+    u16 dstport;
+    u32 srcip;
+    u32 dstip;
+    char serviceName[MAX_PROV_LEN+1];
+    char providerName[MAX_PROV_LEN+1];
+
+    // Following used when there's an error in sequence number incrementing
+    u16 prevSeqNum;
+    u16 curSeqNum;
+    u64 deltaTimeStamp;
+};
 
 // bpf_hash (name, key, val)
-BPF_HASH(last, struct StreamID, struct StreamInfo);
+BPF_HASH(sharedhash, struct StreamID, struct StreamInfo);
+
+// For pushing out stats messages periodically
+BPF_PERF_OUTPUT(stats_perf);
+
+// For pushing out RTP error messages instantly
+BPF_PERF_OUTPUT(error_perf);
 
 int rtpwatch(struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data; // Pointer to start of the packet
@@ -84,19 +110,19 @@ int rtpwatch(struct xdp_md *ctx) {
 
     // RTP type (bit 9-15) should be 0x21 // 33 otherwise fail fast
     if ((rtp->flags2 & 0x7f) != 33) {
-        bpf_trace_printk("RTP not mpeg2 transprot stream");
+//        bpf_trace_printk("RTP not mpeg2 transprot stream");
         return XDP_PASS;
     }
 
     // OK it's a valid RTP stream, we're set, generate the unique key identifying this stream
-    key.srcip = ip->saddr;
-    key.dstip = ip->daddr;
+    key.srcip = ntohl(ip->saddr);
+    key.dstip = ntohl(ip->daddr);
     key.srcport = ntohs(udp->source);
     key.dstport = ntohs(udp->dest);
 
     // Pull the current stream info database to update from the SDT
     struct StreamInfo template_info = {0};
-    info_p = last.lookup_or_init(&key, &template_info);
+    info_p = sharedhash.lookup_or_init(&key, &template_info);
     
     // Check the contents of the mpegts packets and look for the SDT. SDT is only shown periodically (sometimes 10 times a second, sometimes once every 10 seconds)
     // Iterate over all 7 mpegts packets, check they are valid mpegts (start with 0x47)
@@ -107,7 +133,7 @@ int rtpwatch(struct xdp_md *ctx) {
         if ((void*)mpeg[i] + sizeof(*mpeg[i]) > data_end) { return XDP_PASS; } // bound checking
 
         if (mpeg[i]->sync != 0x47) {
-            bpf_trace_printk("MPEG packet %lu sync byte not 0x47 (is 0x%x)\n", i, mpeg[i]->sync);
+//            bpf_trace_printk("MPEG packet %lu sync byte not 0x47 (is 0x%x)\n", i, mpeg[i]->sync);
             return XDP_PASS;
         }
 
@@ -177,7 +203,7 @@ int rtpwatch(struct xdp_md *ctx) {
     deltaAgeOfStream = arrivalts - info_p->firstPacketTime;
     deltaSDT = arrivalts - info_p->lastSeenSDT;
 
-    if (seqnum % 5000 == 0) {
+/*    if (seqnum % 5000 == 0) {
         // dump out statistics for debugging
         bpf_trace_printk("------------------------- CURRENT STATS ------------------------\n");
         bpf_trace_printk("Valid MPEGRT/RTP sport %lu packet seq %lu delta=%d\n", key.srcport, seqnum, deltaSeqNum);
@@ -188,24 +214,90 @@ int rtpwatch(struct xdp_md *ctx) {
         bpf_trace_printk("Valid MPEGRT/RTP sport last seen service name >%s<\n", info_p->serviceName, info_p->serviceName);
         bpf_trace_printk("Valid MPEGRT/RTP sport last seen SDT change >%lu<\n", deltaSDT);
         bpf_trace_printk("----------------------- END CURRENT STATS ----------------------\n");
-    }
+    }*/
 
     if (deltaSeqNum == 1) {
         // Normal incrementing, nothing to do
     } else if (deltaSeqNum == -65535) {
         // Normal rollover, nothing to do
-        bpf_trace_printk("RTP rollover seq %lu delta=%d\n", seqnum, deltaSeqNum);
+//        bpf_trace_printk("RTP rollover seq %lu delta=%d\n", seqnum, deltaSeqNum);
     } else {
         bpf_trace_printk("RTP packet loss %s seq %lu delta=%d\n", info_p->serviceName, seqnum, deltaSeqNum);
+        bpf_trace_printk("RTP packet loss %lu %lu delta=%lu\n", info_p->lastPacketTime, arrivalts, deltaTimeStamp);
         info_p->errors++;
+
+        struct stats_data_t data = {};
+        data.lastPacketTime = info_p->lastPacketTime;
+        data.firstPacketTime = info_p->firstPacketTime;
+        data.packetnum = info_p->packetnum;
+        data.lastSeqNum = info_p->lastSeqNum;
+        data.errors = info_p->errors;
+
+        data.srcport = key.srcport;
+        data.dstport = key.dstport;
+        data.srcip = key.srcip;
+        data.dstip = key.dstip;
+
+        // Copy (not point) the service/provider name so we don't need to worry about it changing
+        for (i = 0; i < sizeof(data.serviceName); i++) {
+            data.serviceName[i] = info_p->serviceName[i];
+        }
+        data.serviceName[sizeof(data.serviceName)-1] = '\0';
+        for (i = 0; i < sizeof(data.providerName); i++) {
+            data.providerName[i] = info_p->providerName[i];
+        }
+        data.providerName[sizeof(data.providerName)-1] = '\0';
+
+        // Error specific information
+        // FIXME - is delaTimeStamp really right?
+        data.prevSeqNum = info_p->lastSeqNum;
+        data.curSeqNum = seqnum;
+        data.deltaTimeStamp = deltaTimeStamp;
+
+        error_perf.perf_submit(ctx, &data, sizeof(data));
     }
 
+    bool resetStats = false;
     if (deltaAgeOfStream > STREAM_SAMPLE_RESET_TIME_NS) {
+        resetStats = true;
+    }
+        
+    if (resetStats) {
+        // Should we reset EVERY stream - if a stream stops, we won't trigger, we should clear up old streams after some time
+
+/*
         long long packetRateAdj = info_p->packetnum * 1000000000;
         long long current_packet_rate = packetRateAdj / deltaAgeOfStream;
         long long ip_rate = BYTES_PER_IP_PACKET * current_packet_rate * 8;
+        bpf_trace_printk("Reset stream data for source %s, %llu errors, stream %llubps\n", info_p->serviceName, info_p->errors, ip_rate);*/
+        
+        // message to push to userspace
+        struct stats_data_t data = {};
+        data.lastPacketTime = info_p->lastPacketTime;
+        data.firstPacketTime = info_p->firstPacketTime;
+        data.packetnum = info_p->packetnum;
+        data.lastSeqNum = info_p->lastSeqNum;
+        data.errors = info_p->errors;
 
-        bpf_trace_printk("Reset stream data for source %s, %llu errors, stream %llubps\n", info_p->serviceName, info_p->errors, ip_rate);
+        data.srcport = key.srcport;
+        data.dstport = key.dstport;
+        data.srcip = key.srcip;
+        data.dstip = key.dstip;
+
+        // Copy (not point) the service/provider name so we don't need to worry about it changing
+        for (i = 0; i < sizeof(data.serviceName); i++) {
+            data.serviceName[i] = info_p->serviceName[i];
+        }
+        data.serviceName[sizeof(data.serviceName)-1] = '\0';
+        for (i = 0; i < sizeof(data.providerName); i++) {
+            data.providerName[i] = info_p->providerName[i];
+        }
+        data.providerName[sizeof(data.providerName)-1] = '\0';
+
+        // And push the message
+        stats_perf.perf_submit(ctx, &data, sizeof(data));
+
+        // reset stats
         info_p->packetnum = 0;
         info_p->lastSeqNum = 0;
         info_p->lastPacketTime = 0;
@@ -213,9 +305,9 @@ int rtpwatch(struct xdp_md *ctx) {
         info_p->errors = 0;
         // Only expire really old SDT data
         if (deltaSDT > MAX_SDT_TIME_NS) {
-            bpf_trace_printk("Reset expired SDT data too\n");
+//            bpf_trace_printk("Reset expired SDT data too\n");
             info_p->serviceName[0] = '-'; info_p->serviceName[1] = '\0';
-            info_p->providerName[0] = '-'; info_p->providerName[1] = '\0';
+            info_p->providerName[0] = '*'; info_p->providerName[1] = '\0';
         }
     }
 
