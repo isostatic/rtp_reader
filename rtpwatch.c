@@ -4,6 +4,12 @@
 #include <linux/ip.h>
 #include <linux/udp.h>
         
+// TODO - 
+// track maximum interpacket arrival in a given monitornig periord
+// can we share MAX_PROV_LEN with userspace
+// can we set MAX_SDT_TIME_NS and STREAM_SAMPLE_RESET_TIME_NS from userspace
+// Can we push data after a stream has ended (say no packets for X seconds -- like MAX_SDT_TIME_NS)
+
 const u64 NS_IN_SEC = 1000000000;
 const u64 STREAM_SAMPLE_RESET_TIME_NS = NS_IN_SEC*5; // time to reset stream counters in nanoseconds - 5 seconds
 const u64 BYTES_PER_IP_PACKET = 1328 + sizeof(struct udphdr) + sizeof(struct iphdr); // rtp = 7*188 + 12 = 1328
