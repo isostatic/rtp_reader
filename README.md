@@ -4,7 +4,7 @@
 
 A quick and dirty tool to take a pcap file and look at RTP streams inside it, looking for gaps in the RTP sequence number, CC numbers on the pids, and optionally outputting the contents to a file for later playback
 
-Might be useful for people looking at RTP streams and don't have any proper tools. Any issues, tough. Any comments on the terrible code quality? Tough, I know that, I'm not a developer, I write tools to the minimum quality to help me do a job and then move on.
+Might be useful for people looking at RTP streams and don't have any proper tools. Any issues, tough. Any comments on the terrible code quality? Tough, I know that, I'm not a developer, I write tools to the minimum quality to help me do a job and then move on. Feel free to copy/fork/etc
 
 Parse a tcpdump capture file
   ./dumpts.py -i /tmp/cap.cap 
