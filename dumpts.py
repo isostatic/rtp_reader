@@ -188,7 +188,10 @@ def processAdaptationField(key, pidnum, isonum, rtpheader, data):
 #        print(timestamp, str(key),"NOT VALID PAF decode",rtpheader,data)
         ## Not valid packet
         return None;
-    rtp_seq = getBigint(rtpheader[2:4])
+
+    rtp_seq = 1000;
+    if (rtpheader != "==FAKE RTP=="):
+        rtp_seq = getBigint(rtpheader[2:4])
 
     flen = data[4]
     if (flen == 0):
@@ -210,7 +213,9 @@ def processAdaptationField(key, pidnum, isonum, rtpheader, data):
 
         # PCR_base(i) == ((system_clock_frequency * t(i)) DIV 300) % 2^33
         # PCR_ext(i)  == ((system_clock_frequency * t(i)) DIV 1) % 300
-        rtp_ts = getBigint(rtpheader[4:8])
+        rtp_ts = 1000
+        if (rtpheader != "==FAKE RTP=="):
+            rtp_ts = getBigint(rtpheader[4:8])
 #        print("RTPH: ",bytes2hex(rtpheader,8))
 #        print("RTPH: ",bytes2hex(rtpheader[4:8],8))
 #        print("RTP:       ",binp(rtp_ts,32),rtp_ts)
@@ -465,11 +470,16 @@ def printStatsAndReset(number, realtime):
         rtp_str = ""
 #        rtp_str += "min=" + str(lastrtpts[stream]["min"]) + " "
 
+#        print("DBG: ",lastrtpts)
+#        print("DBG: ",lastrtpts[stream])
         rtp_avg = (lastrtpts[stream]["last"]-lastrtpts[stream]["start"])/lastrtpts[stream]["num"]
         rtp_str += " max=" + str(int(lastrtpts[stream]["max"]/100)/10) + "ms"
         rtp_str += " avg=" + str(int(rtp_avg/10)/100) + "ms"
 
-        STATS("Stream: "+stream+" "+streamname+" RTP Packets:"+rtp_str+" Timestamp DIFF " + tsout)
+        if (stream.startswith("UDP")):
+            STATS("Stream: "+stream+" "+streamname+" is a UDP only stream")
+        else:
+            STATS("Stream: "+stream+" "+streamname+" RTP Packets:"+rtp_str+" Timestamp DIFF " + tsout)
 
         for pid in sorted(pidcount[stream]):
             pcrtxt = ""
@@ -514,6 +524,9 @@ def printStatsAndReset(number, realtime):
 
 def parseEther(eth_pkt, baseFilename, mediumType):
     global lastseq
+    global lastts
+    global lastrtpts
+    global tsdiffcount
 
     # If it's ethernet, format is
     # 0-5 -- srcmac
@@ -608,6 +621,22 @@ def parseEther(eth_pkt, baseFilename, mediumType):
             oh = open(ofname,"ab");
             oh.write(ts_data);
             oh.close()
+    elif ((udplen - 8) == len(data) and udplen == 1324):
+#        print("UDP not RTP packet")
+        fakertp = "==FAKE RTP=="
+        ts_data = data
+        stream_key = "UDP:" + srcip + ":" + str(srcport) + ">" + dstip + ":" + str(dstport);
+        lastseq[stream_key] = 1111
+        lastrtpts[stream_key] = {}
+        lastrtpts[stream_key]["min"] = 999999999999
+        lastrtpts[stream_key]["max"] = 1
+        lastrtpts[stream_key]["num"] = 1
+        lastrtpts[stream_key]["start"] = -1
+        lastrtpts[stream_key]["last"] = 1
+        tsdiffcount[stream_key] = {}
+        for i in range(7):
+            base = i * 188
+            parseTS(stream_key,i,fakertp,ts_data[base:base+188])
     else:
         True;
         # Not an RTP packet with 7x188 byte TS
