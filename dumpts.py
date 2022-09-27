@@ -600,15 +600,18 @@ def parseEther(eth_pkt, baseFilename, mediumType):
     udplen = getBigint(udp_pkt[4:6])
 
     data = udp_pkt[8:]
-#    print("Got IP packet ",srcip,srcport,dstip,dstport,len(data));
-    if ((udplen - 8) == len(data) and udplen == 1336):
+    #print("Got IP packet ",srcip,srcport,dstip,dstport,len(data));
+    if ((udplen - 8) == len(data) and (udplen == 1336 or udplen == 1148)):
         # OK, looks like this is the RTP payload
         ts_data = data[12:]
         stream_key = srcip + ":" + str(srcport) + ">" + dstip + ":" + str(dstport);
         parseRTP(stream_key, data)
+        numTS = 7
+        if (udplen == 1148):
+            numTS = 6
         # 7 TS entries
-#        print("START PARSE OF ",stream_key)
-        for i in range(7):
+        #print("START PARSE OF ",stream_key)
+        for i in range(numTS):
             base = i * 188
             parseTS(stream_key,i,data[0:12],ts_data[base:base+188])
 
