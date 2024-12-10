@@ -58,7 +58,8 @@ def INFO(line):
     OUTPUT("INFO",line)
 
 def DEBUG(line):
-    OUTPUT("DEBUG",line)
+    #OUTPUT("DEBUG",line)
+    ""
 
 def OUTPUT(level,line):
     if (timestamp == 0 or log_base == ""):
@@ -133,12 +134,11 @@ def parseRTP(key,data):
 
     rtp_avg = (lastrtpts[key]["last"]-lastrtpts[key]["start"])/lastrtpts[key]["num"]
     rtp_timeperiod_sec = int((lastrtpts[key]["last"]-lastrtpts[key]["start"])/10000)/100
-#    debug(key,timestamp,"Got RTP packet at " + str(rtp_us) + " after " + str(delta_rtp_us) + " (range=" + str(lastrtpts[key]["min"]) + "-" + str(lastrtpts[key]["max"]) + "). Time period (sec)=",rtp_timeperiod_sec,"AVG=",rtp_avg)
-
 
     rtp_seq= getBigint(data[2:4])
 
     rtp_ts= getBigint(data[4:8])
+    #print(key,timestamp,"Got RTP packet (",str(rtp_seq)," at rtp_us=" + str(rtp_us) + " after delta=" + str(delta_rtp_us) + " (total range=" + str(lastrtpts[key]["min"]) + "-" + str(lastrtpts[key]["max"]) + "). Time period (sec)=",rtp_timeperiod_sec,"AVG=",rtp_avg)
 
     if (key not in lastseq):
         lastseq[key] = rtp_seq-1
@@ -157,8 +157,12 @@ def parseRTP(key,data):
 
     if (delta == 1 or delta == -65535):
         # OK
-#        print(key,"ts",bytes2hex(data[4:8]),"decode=",rtp_ts)
-#        print(key + " num:" + str(rtp_seq) + ": tsdiff:" + str(tsdiff) + ": OK")
+        #print(key,"ts",bytes2hex(data[4:8]),"decode=",rtp_ts)
+        #print(key + " num:" + str(rtp_seq) + ": tsdiff:" + str(tsdiff) + ": OK")
+        if (tsdiff < 0):
+            WARNING(key + " RTP sequence num:" + str(rtp_seq) + ": timestamp goes backwards:" + str(tsdiff) + f" to {rtp_ts}")
+        else:
+            DEBUG(key + " RTP sequence num:" + str(rtp_seq) + ": timestamp goes forward:" + str(tsdiff) + f" to {rtp_ts}")
         if (lastts[key] > 0):
             if (tsdiff not in tsdiffcount[key]):
                 tsdiffcount[key][tsdiff] = 0
@@ -316,7 +320,7 @@ def parsePAT(stream, data):
     # assumes 1 program
     # Set aside the mpeg header. First 4 is header, 5 is a pointer (?)
     pat_data = data[5:]
-#    print(stream,"PAT",bytes2hex(pat_data),timestamp)
+    #print(stream,"PAT",bytes2hex(pat_data),timestamp)
     # format
     # b0     = tableid = 0x00 for a Prog assoc table
     # b1-2   = flags + length
@@ -410,7 +414,7 @@ def parseTS(key,isonum,rtpheader,data):
         if (pidnum not in lastcc[key]):
             lastcc[key][pidnum] = -1
 
-#        print(key, "STRT parse of PID",pidnum,"cc=",cc,"last=",lastcc[key][pidnum]);
+        #print(key, "STRT parse of PID",pidnum,"cc=",cc,"last=",lastcc[key][pidnum],"rtp=",str(seqnum));
         if (lastcc[key][pidnum] < 0):
             # start of CC
             True;
