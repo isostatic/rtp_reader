@@ -10,6 +10,7 @@ from socket import htonl
 from datetime import datetime
 
 current_nano_time = lambda: int(round(time.time() * 1000000))
+packetnum = 0
 lastseq = {}
 lastts = {}
 lastcc = {}
@@ -38,6 +39,7 @@ svctable["Provider"] = {}
 
 log_base= ""
 
+lastStatTimeStamp = ""
 
 def STATS(line):
     if (log_base == ""):
@@ -58,8 +60,7 @@ def INFO(line):
     OUTPUT("INFO",line)
 
 def DEBUG(line):
-    #OUTPUT("DEBUG",line)
-    ""
+    OUTPUT("DEBUG",line)
 
 def OUTPUT(level,line):
     if (timestamp == 0 or log_base == ""):
@@ -134,11 +135,12 @@ def parseRTP(key,data):
 
     rtp_avg = (lastrtpts[key]["last"]-lastrtpts[key]["start"])/lastrtpts[key]["num"]
     rtp_timeperiod_sec = int((lastrtpts[key]["last"]-lastrtpts[key]["start"])/10000)/100
+#    debug(key,timestamp,"Got RTP packet at " + str(rtp_us) + " after " + str(delta_rtp_us) + " (range=" + str(lastrtpts[key]["min"]) + "-" + str(lastrtpts[key]["max"]) + "). Time period (sec)=",rtp_timeperiod_sec,"AVG=",rtp_avg)
+
 
     rtp_seq= getBigint(data[2:4])
 
     rtp_ts= getBigint(data[4:8])
-    #print(key,timestamp,"Got RTP packet (",str(rtp_seq)," at rtp_us=" + str(rtp_us) + " after delta=" + str(delta_rtp_us) + " (total range=" + str(lastrtpts[key]["min"]) + "-" + str(lastrtpts[key]["max"]) + "). Time period (sec)=",rtp_timeperiod_sec,"AVG=",rtp_avg)
 
     if (key not in lastseq):
         lastseq[key] = rtp_seq-1
@@ -157,12 +159,8 @@ def parseRTP(key,data):
 
     if (delta == 1 or delta == -65535):
         # OK
-        #print(key,"ts",bytes2hex(data[4:8]),"decode=",rtp_ts)
-        #print(key + " num:" + str(rtp_seq) + ": tsdiff:" + str(tsdiff) + ": OK")
-        if (tsdiff < 0):
-            WARNING(key + " RTP sequence num:" + str(rtp_seq) + ": timestamp goes backwards:" + str(tsdiff) + f" to {rtp_ts}")
-        else:
-            DEBUG(key + " RTP sequence num:" + str(rtp_seq) + ": timestamp goes forward:" + str(tsdiff) + f" to {rtp_ts}")
+#        print(key,"ts",bytes2hex(data[4:8]),"decode=",rtp_ts)
+#        print(key + " num:" + str(rtp_seq) + ": tsdiff:" + str(tsdiff) + ": OK")
         if (lastts[key] > 0):
             if (tsdiff not in tsdiffcount[key]):
                 tsdiffcount[key][tsdiff] = 0
@@ -320,7 +318,7 @@ def parsePAT(stream, data):
     # assumes 1 program
     # Set aside the mpeg header. First 4 is header, 5 is a pointer (?)
     pat_data = data[5:]
-    #print(stream,"PAT",bytes2hex(pat_data),timestamp)
+#    print(stream,"PAT",bytes2hex(pat_data),timestamp)
     # format
     # b0     = tableid = 0x00 for a Prog assoc table
     # b1-2   = flags + length
@@ -366,6 +364,7 @@ def parseTS(key,isonum,rtpheader,data):
 #    print(lastcc)
 
     hdr = data[0:4]
+    #print(" ".join(f"{b:02X}" for b in hdr))
     if (hdr[0] == 0x47):
         pidH = hdr[1] & 0x1F;
         pidL = hdr[2];
@@ -414,7 +413,7 @@ def parseTS(key,isonum,rtpheader,data):
         if (pidnum not in lastcc[key]):
             lastcc[key][pidnum] = -1
 
-        #print(key, "STRT parse of PID",pidnum,"cc=",cc,"last=",lastcc[key][pidnum],"rtp=",str(seqnum));
+#        print(key, "STRT parse of PID",pidnum,"cc=",cc,"last=",lastcc[key][pidnum]);
         if (lastcc[key][pidnum] < 0):
             # start of CC
             True;
@@ -426,12 +425,13 @@ def parseTS(key,isonum,rtpheader,data):
     
         if (diff != 1):
             streamname = getStreamName(key)
-            ERROR(key  +" CC ERROR in " + key + " (" + streamname + ") RTP=" + str(seqnum) + "." + str(pidnum) + ". Jumped " + str(diff) + " from " + str(lastcc[key][pidnum]) + " to " + str(cc));
+            ERROR(key  +" CC ERROR in " + key + " (" + streamname + ") RTP=" + str(seqnum) + "." + str(isonum) + " pid=" + str(pidnum) + ". Jumped " + str(diff) + " from " + str(lastcc[key][pidnum]) + " to " + str(cc));
 
 #        print(key,"PID ",pidnum,"=",hex(pidnum),"CC=",cc,"diff=",diff,"lastcc=",lastcc[key][pidnum])
         lastcc[key][pidnum] = cc
         pidcount[key][pidnum] += 1
 #        print(key, "FINISHED parse of PID",pidnum,"cc=",cc,"last=",lastcc[key][pidnum]);
+        #print(f"{key} rtp={seqnum}.{isonum} pid={pidnum} cc={cc}")
     else:
         WARNING("SYNC BYTE INVALID")
 
@@ -440,14 +440,30 @@ def byte2ip(i):
     return(str(i[0]) + "." + str(i[1]) + "." + str(i[2]) + "." + str(i[3]));
 
 def printStatsAndReset(number, realtime):
-    global pidcount, tsdiffcount, pcrdiffcount, lastpcrrtp, lastpcrbase, lastpcrext
+    global pidcount, tsdiffcount, pcrdiffcount, lastpcrrtp, lastpcrbase, lastpcrext, lastStatTimeStamp
     number = str(number)
 
     # If realtime is sent, print 100 blank lines to make it easier to watch in a real time window
     if (realtime):
         for i in range(100):
             STATS("")
-    STATS("== CURRENT STATS " + timestamp + " of last " + number + " packets ==")
+
+    diff_seconds = -1
+    pps = -1
+    try:
+        fmt = "%Y-%m-%d %H:%M:%S.%f"
+        dt_a = datetime.strptime(timestamp, fmt)
+        dt_b = datetime.strptime(lastStatTimeStamp, fmt)
+        diff_seconds = int((dt_a - dt_b).total_seconds())
+        pps = int(number) / int(diff_seconds)
+    except Exception as e:
+        # Error decoding timestamp
+        print(e)
+        diff_seconds = -10
+
+    STATS(f"== CURRENT STATS {timestamp} of last {number} packets ({diff_seconds} s)==")
+
+    lastStatTimeStamp = timestamp
     for stream in sorted(pidcount):
         tsout = ""
         total = 0
@@ -480,10 +496,24 @@ def printStatsAndReset(number, realtime):
         rtp_str += " max=" + str(int(lastrtpts[stream]["max"]/100)/10) + "ms"
         rtp_str += " avg=" + str(int(rtp_avg/10)/100) + "ms"
 
+        totalBits = 0
+        for pid in sorted(pidcount[stream]):
+            totalBits = totalBits + pidcount[stream][pid] * 188 * 8
+        payloadbitrate = "n/a"
+        if (diff_seconds > 0):
+            payloadbitrate = totalBits / diff_seconds
+            if (payloadbitrate > 1000000):
+                payloadbitrate = f"{int(payloadbitrate / 100000)/10} MBit/s"
+            elif (payloadbitrate > 1000):
+                payloadbitrate = f"{int(payloadbitrate / 100)/10} kbit/s"
+            else:
+                payloadbitrate = f"{int(payloadbitrate)}bps"
+
         if (stream.startswith("UDP")):
-            STATS("Stream: "+stream+" "+streamname+" is a UDP only stream")
+            STATS(f"Stream: {stream} {streamname} is a UDP only stream with payload bitrate of {payloadbitrate}")
         else:
             STATS("Stream: "+stream+" "+streamname+" RTP Packets:"+rtp_str+" Timestamp DIFF " + tsout)
+            STATS(f"Stream: {stream} {streamname} RTP Packets:{rtp_str} Timestamp DIFF {tsout} is RTP stream with payload bitrate of {payloadbitrate}")
 
         for pid in sorted(pidcount[stream]):
             pcrtxt = ""
@@ -511,7 +541,22 @@ def printStatsAndReset(number, realtime):
                     avgVal = totVal / numVal
                     pcrtxt = " *PCR avg=" + str(int(avgVal*100)/100) + ", range=" + str(mnVal) + "-" + str(mxVal) + " {" + valOut + " }"
 
-            STATS("Stream:"+stream+" " + streamname + " Pid:"+pid_str+" Count:"+str(pidcount[stream][pid])+" " + pcrtxt)
+            bits = pidcount[stream][pid] * 188 * 8
+            bitrate = "n/a"
+            try:
+                if (diff_seconds <= 0):
+                    bitrate = "n/a"
+                else:
+                    bitrate = int(bits / diff_seconds)
+                    if (bitrate > 1000000):
+                        bitrate = f"{int(bitrate / 100000)/10} MBit/s"
+                    elif (bitrate > 1000):
+                        bitrate = f"{int(bitrate / 100)/10} kbit/s"
+                    else:
+                        bitrate = f"{int(bitrate)}bps"
+            except:
+                bitrate = "n/a"
+            STATS("Stream:"+stream+" " + streamname + " Pid:"+pid_str+" Count:"+str(pidcount[stream][pid])+f" {bitrate}" + pcrtxt)
     # end of for each pidcount
     pidcount = {}
     tsdiffcount = {}
@@ -527,6 +572,7 @@ def printStatsAndReset(number, realtime):
         lastrtpts[stream]["start"] = -1
 
 def parseEther(eth_pkt, baseFilename, mediumType):
+    global packetnum
     global lastseq
     global lastts
     global lastrtpts
@@ -628,12 +674,35 @@ def parseEther(eth_pkt, baseFilename, mediumType):
             oh = open(ofname,"ab");
             oh.write(ts_data);
             oh.close()
+    elif (len(data) - 22) % 188 == 0 or (len(data) - 30) % 188 == 0:
+        # 18 byte header and 4 byte footer with 0->7 TS packets
+        numTS = int((len(data) - 22) / 188)
+        fakertp = "==FAKE RTP=="
+        ts_data = data[18:-4]
+        if (((len(data) - 30) % 188) == 0):
+            ## 12 byte train rather than 10
+            ts_data = data[18:-12]
+        #print(f"Nextologies DaVinci (TXR) protocol. {len(ts_data)} byte payload / {numTS} pkts")
+
+        stream_key = "UDP:" + srcip + ":" + str(srcport) + ">" + dstip + ":" + str(dstport);
+        lastseq[stream_key] = packetnum % 65536
+        lastrtpts[stream_key] = {}
+        lastrtpts[stream_key]["min"] = 999999999999
+        lastrtpts[stream_key]["max"] = 1
+        lastrtpts[stream_key]["num"] = 1
+        lastrtpts[stream_key]["start"] = -1
+        lastrtpts[stream_key]["last"] = 1
+        tsdiffcount[stream_key] = {}
+        for i in range(numTS):
+            base = i * 188
+            parseTS(stream_key,i,fakertp,ts_data[base:base+188])
+
     elif ((udplen - 8) == len(data) and udplen == 1324):
 #        print("UDP not RTP packet")
         fakertp = "==FAKE RTP=="
         ts_data = data
         stream_key = "UDP:" + srcip + ":" + str(srcport) + ">" + dstip + ":" + str(dstport);
-        lastseq[stream_key] = 1111
+        lastseq[stream_key] = packetnum % 65536
         lastrtpts[stream_key] = {}
         lastrtpts[stream_key]["min"] = 999999999999
         lastrtpts[stream_key]["max"] = 1
@@ -652,7 +721,8 @@ def parseEther(eth_pkt, baseFilename, mediumType):
     
 
 def readPacket(fh, baseFilename, mediumType):
-    global timestamp,starttime,unix_time,unix_time_high,rtp_us
+    global timestamp,starttime,unix_time,unix_time_high,rtp_us,packetnum
+    packetnum = packetnum+1
     header = bytearray(fh.read(16))
 #    print("READ PACKET, bytes=",len(header))
     unix_time = getint(header[0:4])
