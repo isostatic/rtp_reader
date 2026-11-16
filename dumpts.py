@@ -541,10 +541,9 @@ def printStatsAndReset(number, realtime):
 
         tos_string = qos_cache[stream] or "Unknown"
         if (stream.startswith("UDP")):
-            STATS(f"Stream: {stream} {streamname} is a UDP only stream with payload bitrate of {payloadbitrate}")
+            STATS(f"Stream: {stream} {streamname} at QOS {tos_string} is a UDP only stream with payload bitrate of {payloadbitrate}")
         else:
-            STATS(f"Stream: {stream} {streamname} at QOS {tos_string} RTP Packets:{rtp_str} Timestamp DIFF {tsout}")
-            STATS(f"Stream: {stream} {streamname} RTP Packets:{rtp_str} Timestamp DIFF {tsout} is RTP stream with payload bitrate of {payloadbitrate}")
+            STATS(f"Stream: {stream} {streamname} at QOS {tos_string} RTP Packets:{rtp_str} Timestamp DIFF {tsout} is RTP stream with payload bitrate of {payloadbitrate}")
 
         for pid in sorted(pidcount[stream]):
             pcrtxt = ""
