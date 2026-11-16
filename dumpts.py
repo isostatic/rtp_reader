@@ -37,9 +37,39 @@ svctable = {}
 svctable["Service"] = {}
 svctable["Provider"] = {}
 
+qos_cache = {}
+
 log_base= ""
 
 lastStatTimeStamp = ""
+
+DSCP_NAMES = {
+    0:  "BE",
+    2:  "BE2",
+    4:  "BE4",
+    8:  "CS1",
+    10: "AF11",
+    12: "AF12",
+    14: "AF13",
+    16: "CS2",
+    18: "AF21",
+    20: "AF22",
+    22: "AF23",
+    24: "CS3",
+    26: "AF31",
+    28: "AF32",
+    30: "AF33",
+    32: "CS4",
+    34: "AF41",
+    36: "AF42",
+    38: "AF43",
+    40: "CS5",
+    46: "EF",
+    48: "CS6",
+    56: "CS7",
+}
+
+
 
 def STATS(line):
     if (log_base == ""):
@@ -509,10 +539,11 @@ def printStatsAndReset(number, realtime):
             else:
                 payloadbitrate = f"{int(payloadbitrate)}bps"
 
+        tos_string = qos_cache[stream] or "Unknown"
         if (stream.startswith("UDP")):
             STATS(f"Stream: {stream} {streamname} is a UDP only stream with payload bitrate of {payloadbitrate}")
         else:
-            STATS("Stream: "+stream+" "+streamname+" RTP Packets:"+rtp_str+" Timestamp DIFF " + tsout)
+            STATS(f"Stream: {stream} {streamname} at QOS {tos_string} RTP Packets:{rtp_str} Timestamp DIFF {tsout}")
             STATS(f"Stream: {stream} {streamname} RTP Packets:{rtp_str} Timestamp DIFF {tsout} is RTP stream with payload bitrate of {payloadbitrate}")
 
         for pid in sorted(pidcount[stream]):
@@ -642,6 +673,11 @@ def parseEther(eth_pkt, baseFilename, mediumType):
     ip_hdr = ip_pkt[0:20]
     udp_pkt = ip_pkt[20:]
 
+    tos = ip_hdr[1]
+    dscp = tos >> 2
+    traffic_class = DSCP_NAMES.get(dscp, f"DSCP-{dscp}")
+    tos_string = f"TOS=0x{tos:02x} (DSCP {dscp}) -- '{traffic_class}'"
+
     srcip = byte2ip(ip_hdr[12:16])
     dstip = byte2ip(ip_hdr[16:20])
 
@@ -655,6 +691,11 @@ def parseEther(eth_pkt, baseFilename, mediumType):
         # OK, looks like this is the RTP payload
         ts_data = data[12:]
         stream_key = srcip + ":" + str(srcport) + ">" + dstip + ":" + str(dstport);
+        
+        if stream_key in qos_cache and qos_cache[stream_key] != tos_string:
+            WARNING(f"{stream_key} qos changed from {qos_cache[stream_key]} to {tos_string}")
+        qos_cache[stream_key] = tos_string
+
         parseRTP(stream_key, data)
         numTS = 7
         if (udplen == 1148):
